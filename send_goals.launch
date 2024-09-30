@@ -1,0 +1,7 @@
+<?xml version="1.0"?>
+<!-- 將目標存到points_outdoor.txt，執行outdoor_waypoint_nav.launch後，執行send_goals.launch就可以往目標點移動 -->
+<launch>
+	<node ns="/outdoor_waypoint_nav" pkg="outdoor_waypoint_nav" type="gps_waypoint" name="gps_waypoint" output="screen" />
+		<param name="/outdoor_waypoint_nav/coordinates_file" value="/waypoint_files/points_outdoor.txt" type="string" />
+			
+</launch>

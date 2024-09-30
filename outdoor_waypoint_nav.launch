@@ -1,0 +1,118 @@
+<?xml version="1.0"?>
+
+<launch>
+   <!-- 引數定義，指定地圖檔案和數據保存的路徑 -->
+   <!-- map_file：地圖文件路徑 -->
+   <!-- data_path：數據保存的路徑 -->
+   <arg name="map_file" default="$(env SOURCED_WS)/maps/blank_map.yaml"/>
+   <!-- <arg name="map_file" default="$(env SOURCED_WS)/maps/taipei_port_map_4.yaml"/>-->
+   <arg name="data_path" default="$(env SOURCED_WS)/data/2024_0920"/>
+   
+   <!-- 設定是否記錄RGB圖片和熱成像圖片 -->
+   <arg name="record_rgb_images" value="true"/>
+   <arg name="record_thermal_images" value="true"/>
+
+   <!-- 包含其他package的launch文件 -->
+   <!-- VLP16的點雲數據launch文件 -->
+   <include file="$(find velodyne_pointcloud)/launch/VLP16_points.launch"/>
+   
+   <!-- 啟動Realsense相機，並設置各項參數 -->
+   <include file="$(find realsense2_camera)/launch/includes/nodelet.launch.xml">
+      <arg name="serial_no"         value=""/>
+      <arg name="json_file_path"    value=""/>
+      <arg name="depth_width"       value="640"/>
+      <arg name="depth_height"      value="480"/>
+      <arg name="depth_fps"         value="30"/>
+      <arg name="color_width"       value="640"/>
+      <arg name="color_height"      value="480"/>
+      <arg name="color_fps"         value="30"/>
+      <arg name="gyro_fps"            default="400"/>
+      <arg name="accel_fps"           default="250"/>
+      <arg name="enable_depth"      value="true"/>
+      <arg name="enable_color"      value="true"/>
+      <arg name="enable_infra1"     value="false"/>
+      <arg name="enable_infra2"     value="false"/>
+      <arg name="enable_fisheye"    value="false"/>
+      <arg name="enable_gyro"       value="true"/>
+      <arg name="enable_accel"      value="true"/>
+      <arg name="enable_pointcloud" value="true"/>
+      <arg name="enable_sync"       value="true"/>
+      <arg name="align_depth"         default="true"/>
+      <arg name="tf_prefix"         value="camera"/>
+   </include>
+
+   <!-- 設定靜態變換座標系的發布者 -->
+   <!-- 將velodyne和realsense相機與機器人的基座base_link連接 -->
+   <node pkg="tf" type="static_transform_publisher" name="velodyne_to_robo_tf" args=" 0 0 0.90 0 0 0 base_link velodyne 100"/>
+   <node pkg="tf" type="static_transform_publisher" name="realsense_to_robo_tf" args=" 0 0 0.80 0 0 0 base_link camera_link 100"/>
+   <!-- GPS的靜態變換 -->
+   <node pkg="tf" type="static_transform_publisher" name="gps_to_base_link_tf" args="0 0 0.425 0 0 0 base_link ublox 100" />
+   <!-- odom 和 utm 座標之間的靜態變換 -->
+   <node pkg="tf" type="static_transform_publisher" name="link1_broadcaster" args="0 0 0 0 0 0 1 odom utm 100" />
+
+   <!-- 以下部分是選擇性參數設定，可以根據是否啟動localization來進行設定 -->
+   <!-- rtabmap引數的設定 -->
+   <!-- 
+   <arg name="localization" default="false"/>
+   <arg name="database_path" default="~/.ros/rtabmap.db"/>
+   <arg     if="$(arg localization)" name="rtabmap_args" default=""/>
+   <arg unless="$(arg localization)" name="rtabmap_args" default="-d"/>
+   -->
+
+   <!-- 啟動FLIR Lepton熱成像儀驅動 -->
+   <include file="$(find flir_lepton_driver)/launch/flir_lepton_driver.launch">
+    <arg name="rotate_deg"  value="0" doc="rotate_deg [0, 90, 180, 270]"/>
+   </include>
+
+   <!-- 啟動氣體檢測模塊，並保存數據到指定路徑 -->
+   <include file="$(find nevada_nano_driver)/launch/nevada_nano_driver.launch">
+    <arg name="gas_record_path"  value="$(arg data_path)"/>
+   </include>
+
+   <!-- 設定圖像保存的節點 -->
+   <!-- 如果record_rgb_images為真，則啟動RGB圖片保存節點 -->
+   <group if="$(arg record_rgb_images)">
+   <node name="rgb_image_saver" pkg="image_view" type="extract_images" respawn="false" >
+      <remap from="image" to="/color/image_raw" />
+      <param name="filename_format" type="string" value="$(arg data_path)/rgb_images/image_%04i.jpg" />
+      <param name="sec_per_frame" type="double" value="3.0" />
+   </node>
+   </group>
+
+   <!-- 如果record_thermal_images為真，則啟動熱成像圖片保存節點 -->
+   <group if="$(arg record_thermal_images)">
+   <node name="thermal_image_saver" pkg="image_view" type="extract_images" respawn="false" >
+      <remap from="image" to="/flir_lepton/thermal_image_raw" />
+      <param name="filename_format" type="string" value="$(arg data_path)/thermal_images/image_%04i.jpg" />
+      <param name="sec_per_frame" type="double" value="3.0" />
+   </node>
+   </group>
+
+   <!-- 啟動Yolo V8 熱成像目標檢測節點 -->
+   <!-- 使用已訓練的模型來檢測熱成像中的目標 -->
+   <param name="use_cpu"           value="true" />
+
+   <!-- 啟動 Yolo V8 熱成像檢測和ROS包的節點 -->
+   <node pkg="yolov8_ros" type="thermal_yolo_v8.py" name="yolov8_ros" output="screen" >
+      <param name="weight_path"       value="$(find yolov8_ros)/weights/best.pt"/>
+      <param name="image_topic"       value="/flir_lepton/thermal_image_raw" />
+      <param name="pub_topic"         value="/yolov8/BoundingBoxes" />
+      <param name="camera_frame"       value="camera_color_frame"/>
+      <param name="visualize"       value="true"/>
+      <param name="conf"              value="0.3" />
+   </node>
+
+   <!-- 啟動robot_localization包，用於機器人定位 -->
+   <include file="$(find outdoor_waypoint_nav)/launch/include/localization_run.launch"/>
+
+   <!-- 啟動gmapping來建立地圖 -->
+   <include file="$(find jackal_navigation)/launch/include/gmapping.launch" />
+
+   <!-- 啟動move_base來啟用導航 -->
+   <include file="$(find jackal_navigation)/launch/include/move_base.launch" />
+
+   <!-- 啟動rviz來進行可視化 -->
+   <!-- 使用自定義的rviz配置文件來展示導航地圖 -->
+	<node name="rviz" pkg="rviz" type="rviz" args="-d $(find outdoor_waypoint_nav)/rviz_config/outdoor_waypoint_nav_mapping_rviz.rviz"/>
+
+</launch>
